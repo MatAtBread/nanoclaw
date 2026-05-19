@@ -459,7 +459,9 @@ async function buildContainerArgs(
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;
   args.push(imageTag);
 
-  args.push('-c', 'exec bun run /app/src/index.ts');
+  // Run mnemon setup on every start (idempotent), then exec bun so it becomes
+  // tini's direct child and receives signals cleanly.
+  args.push('-c', 'mnemon setup --target claude-code --yes --global >/dev/stderr 2>&1; exec bun run /app/src/index.ts');
 
   return args;
 }

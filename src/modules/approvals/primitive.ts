@@ -174,12 +174,6 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
     ? (getMessagingGroup(session.messaging_group_id)?.channel_type ?? '')
     : '';
 
-  const target = await pickApprovalDelivery(approvers, originChannelType);
-  if (!target) {
-    notifyAgent(session, `${action} failed: no DM channel found for any eligible approver.`);
-    return;
-  }
-
   const approvalId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const normalizedOptions = normalizeOptions(APPROVAL_OPTIONS);
   createPendingApproval({
@@ -194,6 +188,43 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
   });
 
   const adapter = getDeliveryAdapter();
+  const cardPayload = JSON.stringify({
+    type: 'ask_question',
+    questionId: approvalId,
+    title,
+    question,
+    options: APPROVAL_OPTIONS,
+  });
+
+  // For web-originated sessions try to deliver the card inline first.
+  // If no web clients are connected, fall through to the owner's DM channel.
+  if (originChannelType === 'web' && session.messaging_group_id && adapter) {
+    const originMg = getMessagingGroup(session.messaging_group_id);
+    if (originMg) {
+      try {
+        const pmid = await adapter.deliver(
+          originMg.channel_type,
+          originMg.platform_id,
+          session.thread_id ?? null,
+          'chat',
+          cardPayload,
+        );
+        if (pmid !== undefined) {
+          log.info('Approval requested (web inline)', { action, approvalId, agentName });
+          return;
+        }
+      } catch {
+        /* no web clients connected — fall through */
+      }
+    }
+  }
+
+  const target = await pickApprovalDelivery(approvers, originChannelType);
+  if (!target) {
+    notifyAgent(session, `${action} failed: no DM channel found for any eligible approver.`);
+    return;
+  }
+
   if (adapter) {
     try {
       await adapter.deliver(
@@ -201,13 +232,7 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
         target.messagingGroup.platform_id,
         null,
         'chat-sdk',
-        JSON.stringify({
-          type: 'ask_question',
-          questionId: approvalId,
-          title,
-          question,
-          options: APPROVAL_OPTIONS,
-        }),
+        cardPayload,
       );
     } catch (err) {
       log.error('Failed to deliver approval card', { action, approvalId, err });

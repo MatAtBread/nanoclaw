@@ -63,6 +63,15 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 # ~300MB Chromium. We've already installed the system one above.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
+# ---- mnemon — persistent agent memory ----------------------------------------
+ARG MNEMON_VERSION=0.1.6
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://github.com/mnemon-dev/mnemon/releases/download/v${MNEMON_VERSION}/mnemon_${MNEMON_VERSION}_linux_${ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin mnemon && \
+    chmod +x /usr/local/bin/mnemon
+
+ENV MNEMON_DATA_DIR=/home/node/.claude/mnemon
+
 # ---- Bun runtime -------------------------------------------------------------
 # Install via the official script (handles multi-arch detection), then move
 # the binary to /usr/local/bin so the non-root `node` user can execute it.
