@@ -124,6 +124,69 @@ function getThreads(): ThreadRow[] {
   }
 }
 
+// ── Thread rename ──────────────────────────────────────────────────
+
+function renameThread(oldName: string, newName: string): { ok: boolean; error?: string } {
+  if (oldName === DEFAULT_THREAD) return { ok: false, error: 'Cannot rename the default thread' };
+  if (newName === oldName) return { ok: true };
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(newName)) return { ok: false, error: 'Invalid thread name' };
+
+  try {
+    const db = new Database(path.join(process.cwd(), 'data', 'v2.db'), { fileMustExist: true });
+    try {
+      const mg = db
+        .prepare("SELECT id FROM messaging_groups WHERE channel_type='web' AND platform_id='web' LIMIT 1")
+        .get() as { id: string } | undefined;
+      if (!mg) return { ok: false, error: 'Web channel not found' };
+
+      const existing = db
+        .prepare('SELECT id FROM sessions WHERE messaging_group_id=? AND thread_id=? LIMIT 1')
+        .get(mg.id, newName) as { id: string } | undefined;
+      if (existing) return { ok: false, error: 'A thread with that name already exists' };
+
+      const result = db
+        .prepare('UPDATE sessions SET thread_id=? WHERE messaging_group_id=? AND thread_id=?')
+        .run(newName, mg.id, oldName);
+      if (result.changes === 0) return { ok: false, error: 'Thread not found' };
+
+      log.info('Thread renamed', { oldName, newName });
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+// ── Thread delete ──────────────────────────────────────────────────
+
+function deleteThread(threadId: string): { ok: boolean; error?: string } {
+  if (threadId === DEFAULT_THREAD) return { ok: false, error: 'Cannot delete the default thread' };
+
+  try {
+    const db = new Database(path.join(process.cwd(), 'data', 'v2.db'), { fileMustExist: true });
+    try {
+      const mg = db
+        .prepare("SELECT id FROM messaging_groups WHERE channel_type='web' AND platform_id='web' LIMIT 1")
+        .get() as { id: string } | undefined;
+      if (!mg) return { ok: false, error: 'Web channel not found' };
+
+      const result = db
+        .prepare("UPDATE sessions SET status='closed' WHERE messaging_group_id=? AND thread_id=? AND status='active'")
+        .run(mg.id, threadId);
+      if (result.changes === 0) return { ok: false, error: 'Thread not found' };
+
+      log.info('Thread deleted', { threadId });
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 // ── Message history from session DBs ──────────────────────────────
 
 function getMessages(threadId: string, limit = 60): MessageEntry[] {
@@ -637,7 +700,7 @@ function chatUI(token: string): string {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <title>NanoClaw</title>${tokenMeta}
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -656,7 +719,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .thread.active{background:#1e3a5f;color:#93c5fd}
 .tdot{width:6px;height:6px;border-radius:50%;background:#3f3f46;flex-shrink:0}
 .thread.active .tdot{background:#3b82f6}
-.tname{overflow:hidden;text-overflow:ellipsis}
+.tname{overflow:hidden;text-overflow:ellipsis;flex:1}
+.thread-actions{display:flex;gap:2px;flex-shrink:0;opacity:0;transition:opacity .15s}
+.thread:hover .thread-actions,.thread:active .thread-actions{opacity:1}
+@media(hover:none){.thread-actions{opacity:1}}
+.thread.editing .tname{display:none}
+.thread.editing .tdot{display:none}
+.thread.editing .thread-actions{display:none}
+.thread-edit-input{display:none;flex:1;background:#1e1e1e;border:1px solid #3f3f46;border-radius:4px;color:#e0e0e0;font-size:12px;padding:2px 4px;outline:none}
+.thread.editing .thread-edit-input{display:block}
+.thread-btn{background:none;border:none;color:#52525b;cursor:pointer;font-size:13px;padding:1px 3px;border-radius:3px;line-height:1}
+.thread-btn:hover{color:#e0e0e0;background:#3f3f46}
+.thread-btn.del:hover{color:#f87171;background:#3f1f1f}
 /* ── Chat ── */
 #chat{flex:1;display:flex;flex-direction:column;min-width:0}
 #mob-header{display:none}
@@ -690,10 +764,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 /* ── Mobile ── */
 #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99}
 @media(max-width:599px){
-  #sidebar{position:fixed;top:0;left:0;width:80vw;max-width:280px;height:100%;z-index:100;transform:translateX(-100%);transition:transform .2s ease;border-right:none;box-shadow:4px 0 24px rgba(0,0,0,.5)}
+  #sidebar{position:fixed;top:0;left:0;width:80vw;max-width:280px;height:100%;z-index:100;transform:translateX(-100%);transition:transform .2s ease;border-right:none;box-shadow:4px 0 24px rgba(0,0,0,.5);padding-top:env(safe-area-inset-top)}
   #sidebar.open{transform:translateX(0)}
   #backdrop.open{display:block}
-  #mob-header{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #27272a;flex-shrink:0}
+  #mob-header{display:flex;align-items:center;gap:10px;padding:max(10px,env(safe-area-inset-top)) 12px 10px;border-bottom:1px solid #27272a;flex-shrink:0}
   #burger{background:none;border:none;color:#e0e0e0;font-size:22px;cursor:pointer;line-height:1;padding:2px 4px}
   #mob-title{font-size:14px;color:#a1a1aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 }
@@ -719,10 +793,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
   <div id="bar">connecting…</div>
 </div>
 <script>
+const DEFAULT_THREAD="default";
 const token=document.querySelector("meta[name=token]")?.content||"";
 const sp=new URLSearchParams(location.search);
-const cur=sp.get("t")||"default";
-if(!sp.has("t")){const u=new URL(location.href);u.searchParams.set("t","default");history.replaceState({},"",u)}
+const cur=sp.get("t")||DEFAULT_THREAD;
+if(!sp.has("t")){const u=new URL(location.href);u.searchParams.set("t",DEFAULT_THREAD);history.replaceState({},"",u)}
 const proto=location.protocol==="https:"?"wss:":"ws:";
 const wsUrl=proto+"//"+location.host+"/?t="+encodeURIComponent(cur)+"&token="+encodeURIComponent(token);
 let ws,ok=false;
@@ -752,10 +827,68 @@ function renderThreads(threads){
   for(const t of threads){
     const d=document.createElement("div");
     d.className="thread"+(t.thread_id===cur?" active":"");
-    d.innerHTML='<div class="tdot"></div><span class="tname">'+esc(t.thread_id)+'</span>';
-    d.onclick=()=>{const u=new URL(location.href);u.searchParams.set("t",t.thread_id);location.href=u};
+    d.innerHTML='<div class="tdot"></div><span class="tname">'+esc(t.thread_id)+'</span>'+
+      '<input class="thread-edit-input" value="'+esc(t.thread_id)+'" maxlength="40">'+
+      '<span class="thread-actions">'+
+        '<button class="thread-btn ren" title="Rename">&#9998;</button>'+
+        (t.thread_id===DEFAULT_THREAD?'':'<button class="thread-btn del" title="Delete">&times;</button>')+
+      '</span>';
+    const tname=d.querySelector(".tname");
+    const editInp=d.querySelector(".thread-edit-input") as HTMLInputElement;
+    const renBtn=d.querySelector(".thread-btn.ren") as HTMLButtonElement;
+    const delBtn=d.querySelector(".thread-btn.del") as HTMLButtonElement;
+    d.onclick=(e)=>{
+      if(d.classList.contains("editing"))return;
+      if((e.target as HTMLElement).closest(".thread-btn"))return;
+      const u=new URL(location.href);u.searchParams.set("t",t.thread_id);location.href=u;
+    };
+    renBtn.onclick=(e)=>{e.stopPropagation();startRename(d,t.thread_id,editInp)};
+    if(delBtn)delBtn.onclick=(e)=>{e.stopPropagation();doDelete(t.thread_id)};
     tlist.appendChild(d);
   }
+}
+
+function startRename(el:HTMLElement,oldName:string,inp:HTMLInputElement){
+  el.classList.add("editing");
+  inp.value=oldName;inp.focus();inp.select();
+  function finish(save:boolean){
+    el.classList.remove("editing");
+    inp.onkeydown=null;inp.onblur=null;
+    if(save){
+      const newName=inp.value.trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")||oldName;
+      if(newName===oldName)return;
+      api("PUT","/api/threads",{oldName,newName}).then(r=>{
+        if(r.ok){
+          if(cur===oldName){const u=new URL(location.href);u.searchParams.set("t",newName);location.href=u}
+          else loadThreads();
+        }else{statusMsg(r.error||"Rename failed")}
+      }).catch(()=>statusMsg("Rename failed"));
+    }
+  }
+  inp.onkeydown=(e)=>{if(e.key==="Enter")finish(true);if(e.key==="Escape")finish(false)};
+  inp.onblur=()=>setTimeout(()=>finish(false),150);
+}
+
+async function doDelete(threadId:string){
+  const r=await api("DELETE","/api/threads?t="+encodeURIComponent(threadId));
+  if(r.ok){
+    if(cur===threadId){const u=new URL(location.href);u.searchParams.set("t",DEFAULT_THREAD);location.href=u}
+    else loadThreads();
+  }else{statusMsg(r.error||"Delete failed")}
+}
+
+async function api(method:string,path:string,body?:unknown){
+  const q=path+(path.includes("?")?"&":"?")+"token="+encodeURIComponent(token);
+  const opts:RequestInit={method,headers:{}};
+  if(body){opts.headers={"Content-Type":"application/json"};opts.body=JSON.stringify(body)}
+  const r=await fetch(q,opts);
+  return r.json() as Promise<{ok:boolean;error?:string}>;
+}
+
+function statusMsg(text:string){
+  const d=document.createElement("div");d.className="msg info";d.textContent=text;
+  msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
+  setTimeout(()=>{if(d.parentNode)d.parentNode.removeChild(d)},4000);
 }
 
 async function loadThreads(){
@@ -1001,6 +1134,53 @@ function createAdapter(): ChannelAdapter {
         }
 
         if (url.pathname === '/api/threads') {
+          if (req.method === 'PUT') {
+            const tokenOk = !token || (url.searchParams.get('token') || '') === token;
+            if (!tokenOk) {
+              res.writeHead(401, { 'Content-Type': 'text/plain' });
+              res.end('Unauthorized');
+              return;
+            }
+            let bodyStr = '';
+            req.on('data', (chunk: Buffer) => {
+              bodyStr += chunk.toString();
+            });
+            req.on('end', () => {
+              try {
+                const { oldName, newName } = JSON.parse(bodyStr) as { oldName: string; newName: string };
+                if (!oldName || !newName) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ ok: false, error: 'Missing oldName or newName' }));
+                  return;
+                }
+                const result = renameThread(oldName, newName);
+                res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+              } catch {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+              }
+            });
+            return;
+          }
+          if (req.method === 'DELETE') {
+            const tokenOk = !token || (url.searchParams.get('token') || '') === token;
+            if (!tokenOk) {
+              res.writeHead(401, { 'Content-Type': 'text/plain' });
+              res.end('Unauthorized');
+              return;
+            }
+            const t = url.searchParams.get('t');
+            if (!t) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: 'Missing ?t= parameter' }));
+              return;
+            }
+            const result = deleteThread(t);
+            res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+            return;
+          }
           const body = JSON.stringify(getThreads());
           res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
           res.end(body);
