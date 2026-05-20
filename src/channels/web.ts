@@ -111,9 +111,10 @@ function getThreads(): ThreadRow[] {
       if (!mg) return [];
       return db
         .prepare(
-          'SELECT thread_id, created_at FROM sessions' +
-            ' WHERE messaging_group_id=? AND thread_id IS NOT NULL' +
-            ' ORDER BY coalesce(last_active, created_at) DESC',
+          'SELECT thread_id, min(created_at) as created_at FROM sessions' +
+            " WHERE messaging_group_id=? AND thread_id IS NOT NULL AND status!='closed'" +
+            ' GROUP BY thread_id' +
+            ' ORDER BY max(coalesce(last_active, created_at)) DESC',
         )
         .all(mg.id) as ThreadRow[];
     } finally {
@@ -172,10 +173,12 @@ function deleteThread(threadId: string): { ok: boolean; error?: string } {
         .get() as { id: string } | undefined;
       if (!mg) return { ok: false, error: 'Web channel not found' };
 
-      const result = db
-        .prepare("UPDATE sessions SET status='closed' WHERE messaging_group_id=? AND thread_id=? AND status='active'")
-        .run(mg.id, threadId);
-      if (result.changes === 0) return { ok: false, error: 'Thread not found' };
+      const exists = db
+        .prepare('SELECT 1 FROM sessions WHERE messaging_group_id=? AND thread_id=? LIMIT 1')
+        .get(mg.id, threadId);
+      if (!exists) return { ok: false, error: 'Thread not found' };
+
+      db.prepare("UPDATE sessions SET status='closed' WHERE messaging_group_id=? AND thread_id=?").run(mg.id, threadId);
 
       log.info('Thread deleted', { threadId });
       return { ok: true };
@@ -704,21 +707,22 @@ function chatUI(token: string): string {
 <title>NanoClaw</title>${tokenMeta}
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f0f0f;color:#e0e0e0;height:100dvh;display:flex;overflow:hidden}
+html{height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#13131c;color:#e2e4ef;position:fixed;inset:0;display:flex;overflow:hidden}
 /* ── Sidebar ── */
-#sidebar{width:200px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #27272a;background:#111}
+#sidebar{width:200px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #2c2c3e;background:#1a1a26}
 #sidebar-top{padding:10px}
-#new-btn{width:100%;padding:8px 10px;background:#2563eb;color:#fff;border:none;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;text-align:left}
-#new-btn:hover{background:#1d4ed8}
+#new-btn{width:100%;padding:8px 10px;background:#4a78f5;color:#fff;border:none;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;text-align:left}
+#new-btn:hover{background:#3a65e0}
 #new-form{padding:4px 10px 8px;display:none}
-#new-input{width:100%;padding:6px 8px;background:#1e1e1e;border:1px solid #3f3f46;border-radius:6px;color:#e0e0e0;font-size:13px;outline:none}
-#new-input:focus{border-color:#2563eb}
+#new-input{width:100%;padding:6px 8px;background:#22223a;border:1px solid #3c3c58;border-radius:6px;color:#e2e4ef;font-size:13px;outline:none}
+#new-input:focus{border-color:#4a78f5}
 #thread-list{flex:1;overflow-y:auto;padding:4px 6px}
-.thread{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:13px;color:#a1a1aa;overflow:hidden;white-space:nowrap;user-select:none}
-.thread:hover{background:#1e1e1e;color:#d4d4d8}
-.thread.active{background:#1e3a5f;color:#93c5fd}
-.tdot{width:6px;height:6px;border-radius:50%;background:#3f3f46;flex-shrink:0}
-.thread.active .tdot{background:#3b82f6}
+.thread{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:13px;color:#9898b8;overflow:hidden;white-space:nowrap;user-select:none}
+.thread:hover{background:#22223a;color:#d0d2e8}
+.thread.active{background:#1c356a;color:#85b5ff}
+.tdot{width:6px;height:6px;border-radius:50%;background:#40405a;flex-shrink:0}
+.thread.active .tdot{background:#4a78f5}
 .tname{overflow:hidden;text-overflow:ellipsis;flex:1}
 .thread-actions{display:flex;gap:2px;flex-shrink:0;opacity:0;transition:opacity .15s}
 .thread:hover .thread-actions,.thread:active .thread-actions{opacity:1}
@@ -726,50 +730,49 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .thread.editing .tname{display:none}
 .thread.editing .tdot{display:none}
 .thread.editing .thread-actions{display:none}
-.thread-edit-input{display:none;flex:1;background:#1e1e1e;border:1px solid #3f3f46;border-radius:4px;color:#e0e0e0;font-size:12px;padding:2px 4px;outline:none}
+.thread-edit-input{display:none;flex:1;background:#22223a;border:1px solid #3c3c58;border-radius:4px;color:#e2e4ef;font-size:12px;padding:2px 4px;outline:none}
 .thread.editing .thread-edit-input{display:block}
-.thread-btn{background:none;border:none;color:#52525b;cursor:pointer;font-size:13px;padding:1px 3px;border-radius:3px;line-height:1}
-.thread-btn:hover{color:#e0e0e0;background:#3f3f46}
-.thread-btn.del:hover{color:#f87171;background:#3f1f1f}
+.thread-btn{background:none;border:none;color:#a8a8cc;cursor:pointer;font-size:13px;padding:1px 3px;border-radius:3px;line-height:1}
+.thread-btn:hover{color:#e2e4ef;background:#30304a}
+.thread-btn.del:hover{color:#ff7b7b;background:#3a1520}
 /* ── Chat ── */
 #chat{flex:1;display:flex;flex-direction:column;min-width:0}
 #mob-header{display:none}
 #messages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
 .msg{max-width:85%;padding:10px 14px;border-radius:16px;line-height:1.45;white-space:pre-wrap;word-break:break-word;font-size:15px}
-.msg.user{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
-.msg.bot{align-self:flex-start;background:#1e1e1e;color:#e0e0e0;border-bottom-left-radius:4px}
-.msg.info{align-self:center;color:#71717a;font-size:12px}
-#input-area{display:flex;padding:10px;gap:8px;border-top:1px solid #27272a}
-#input{flex:1;padding:10px 14px;border-radius:22px;border:1px solid #3f3f46;background:#1e1e1e;color:#e0e0e0;font-size:15px;outline:none;resize:none}
-#input:focus{border-color:#2563eb}
-#send{width:40px;height:40px;border-radius:50%;border:none;background:#2563eb;color:#fff;font-size:18px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.msg.user{align-self:flex-end;background:#4a78f5;color:#fff;border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:#22223a;color:#e2e4ef;border-bottom-left-radius:4px}
+.msg.info{align-self:center;color:#7070a0;font-size:12px}
+#input-area{display:flex;padding:10px;gap:8px;border-top:1px solid #2c2c3e}
+#input{flex:1;padding:10px 14px;border-radius:22px;border:1px solid #3c3c58;background:#22223a;color:#e2e4ef;font-size:15px;outline:none;resize:none}
+#input:focus{border-color:#4a78f5}
+#send{width:40px;height:40px;border-radius:50%;border:none;background:#4a78f5;color:#fff;font-size:18px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 #send:disabled{opacity:0.4;cursor:default}
-#bar{text-align:center;padding:3px;font-size:11px;color:#52525b}
-.si-msg{align-self:flex-start;max-width:85%;padding:10px 14px;background:#1e1e1e;border-radius:16px;border-bottom-left-radius:4px;color:#71717a;display:flex;align-items:center;gap:8px;font-size:14px}
-.q-card{align-self:flex-start;max-width:85%;padding:12px 14px;background:#1e1e1e;border-radius:16px;border-bottom-left-radius:4px;color:#e0e0e0;border:1px solid #3f3f46}
-.q-title{font-size:13px;font-weight:600;color:#a78bfa;margin-bottom:4px}
-.q-body{font-size:13px;color:#9ca3af;white-space:pre-wrap;word-break:break-word;margin-bottom:10px}
+.si-msg{align-self:flex-start;max-width:85%;padding:10px 14px;background:#22223a;border-radius:16px;border-bottom-left-radius:4px;color:#7878a8;display:flex;align-items:center;gap:8px;font-size:14px}
+.q-card{align-self:flex-start;max-width:85%;padding:12px 14px;background:#22223a;border-radius:16px;border-bottom-left-radius:4px;color:#e2e4ef;border:1px solid #3c3c58}
+.q-title{font-size:13px;font-weight:600;color:#b09fff;margin-bottom:4px}
+.q-body{font-size:13px;color:#9898b8;white-space:pre-wrap;word-break:break-word;margin-bottom:10px}
 .q-btns{display:flex;gap:8px;flex-wrap:wrap}
-.q-btn{padding:6px 16px;border-radius:8px;border:1px solid #4b5563;background:transparent;color:#e0e0e0;cursor:pointer;font-size:13px;transition:background .15s,border-color .15s}
-.q-btn:hover:not(:disabled){background:#374151}
-.q-btn.ok{border-color:#22c55e;color:#22c55e}.q-btn.ok:hover:not(:disabled){background:#052e16}
-.q-btn.no{border-color:#ef4444;color:#ef4444}.q-btn.no:hover:not(:disabled){background:#2d0000}
+.q-btn{padding:6px 16px;border-radius:8px;border:1px solid #4c4c6a;background:transparent;color:#e2e4ef;cursor:pointer;font-size:13px;transition:background .15s,border-color .15s}
+.q-btn:hover:not(:disabled){background:#2e2e4a}
+.q-btn.ok{border-color:#34d058;color:#34d058}.q-btn.ok:hover:not(:disabled){background:#0d2e18}
+.q-btn.no{border-color:#f05050;color:#f05050}.q-btn.no:hover:not(:disabled){background:#300a0a}
 .q-btn:disabled{opacity:0.5;cursor:default}
-.q-answered{color:#6b7280;font-size:13px;font-style:italic}
+.q-answered{color:#6868a0;font-size:13px;font-style:italic}
 .si-dots{display:flex;gap:3px;align-items:center}
-.si-dot{width:5px;height:5px;background:#4b5563;border-radius:50%;animation:si 1.2s infinite ease-in-out}
+.si-dot{width:5px;height:5px;background:#505070;border-radius:50%;animation:si 1.2s infinite ease-in-out}
 .si-dot:nth-child(2){animation-delay:.15s}
 .si-dot:nth-child(3){animation-delay:.3s}
 @keyframes si{0%,80%,100%{transform:scale(0.55);opacity:0.3}40%{transform:scale(1);opacity:1}}
 /* ── Mobile ── */
-#backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99}
+#backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99}
 @media(max-width:599px){
-  #sidebar{position:fixed;top:0;left:0;width:80vw;max-width:280px;height:100%;z-index:100;transform:translateX(-100%);transition:transform .2s ease;border-right:none;box-shadow:4px 0 24px rgba(0,0,0,.5);padding-top:env(safe-area-inset-top)}
+  #sidebar{position:fixed;top:0;left:0;width:80vw;max-width:280px;height:100%;z-index:100;transform:translateX(-100%);transition:transform .2s ease;border-right:none;box-shadow:6px 0 28px rgba(0,0,0,.6);padding-top:env(safe-area-inset-top)}
   #sidebar.open{transform:translateX(0)}
   #backdrop.open{display:block}
-  #mob-header{display:flex;align-items:center;gap:10px;padding:max(10px,env(safe-area-inset-top)) 12px 10px;border-bottom:1px solid #27272a;flex-shrink:0}
-  #burger{background:none;border:none;color:#e0e0e0;font-size:22px;cursor:pointer;line-height:1;padding:2px 4px}
-  #mob-title{font-size:14px;color:#a1a1aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #mob-header{display:flex;align-items:center;gap:10px;padding:max(10px,env(safe-area-inset-top)) 12px 10px;border-bottom:1px solid #2c2c3e;flex-shrink:0}
+  #burger{background:none;border:none;color:#e2e4ef;font-size:22px;cursor:pointer;line-height:1;padding:2px 4px}
+  #mob-title{font-size:14px;color:#9898b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 }
 </style>
 </head>
@@ -790,7 +793,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
     <textarea id="input" rows="1" placeholder="Message…" autofocus></textarea>
     <button id="send" disabled>&#9654;</button>
   </div>
-  <div id="bar">connecting…</div>
 </div>
 <script>
 const DEFAULT_THREAD="default";
@@ -802,7 +804,7 @@ const proto=location.protocol==="https:"?"wss:":"ws:";
 const wsUrl=proto+"//"+location.host+"/?t="+encodeURIComponent(cur)+"&token="+encodeURIComponent(token);
 let ws,ok=false;
 const $=id=>document.getElementById(id);
-const msgs=$("messages"),inp=$("input"),btn=$("send"),bar=$("bar"),tlist=$("thread-list");
+const msgs=$("messages"),inp=$("input"),btn=$("send"),tlist=$("thread-list");
 const newBtn=$("new-btn"),newForm=$("new-form"),newInp=$("new-input");
 const sidebar=$("sidebar"),backdrop=$("backdrop"),mobTitle=$("mob-title");
 if(mobTitle)mobTitle.textContent=cur;
@@ -834,12 +836,12 @@ function renderThreads(threads){
         (t.thread_id===DEFAULT_THREAD?'':'<button class="thread-btn del" title="Delete">&times;</button>')+
       '</span>';
     const tname=d.querySelector(".tname");
-    const editInp=d.querySelector(".thread-edit-input") as HTMLInputElement;
-    const renBtn=d.querySelector(".thread-btn.ren") as HTMLButtonElement;
-    const delBtn=d.querySelector(".thread-btn.del") as HTMLButtonElement;
+    const editInp=d.querySelector(".thread-edit-input");
+    const renBtn=d.querySelector(".thread-btn.ren");
+    const delBtn=d.querySelector(".thread-btn.del");
     d.onclick=(e)=>{
       if(d.classList.contains("editing"))return;
-      if((e.target as HTMLElement).closest(".thread-btn"))return;
+      if(e.target.closest(".thread-btn"))return;
       const u=new URL(location.href);u.searchParams.set("t",t.thread_id);location.href=u;
     };
     renBtn.onclick=(e)=>{e.stopPropagation();startRename(d,t.thread_id,editInp)};
@@ -848,10 +850,10 @@ function renderThreads(threads){
   }
 }
 
-function startRename(el:HTMLElement,oldName:string,inp:HTMLInputElement){
+function startRename(el,oldName,inp){
   el.classList.add("editing");
   inp.value=oldName;inp.focus();inp.select();
-  function finish(save:boolean){
+  function finish(save){
     el.classList.remove("editing");
     inp.onkeydown=null;inp.onblur=null;
     if(save){
@@ -869,7 +871,7 @@ function startRename(el:HTMLElement,oldName:string,inp:HTMLInputElement){
   inp.onblur=()=>setTimeout(()=>finish(false),150);
 }
 
-async function doDelete(threadId:string){
+async function doDelete(threadId){
   const r=await api("DELETE","/api/threads?t="+encodeURIComponent(threadId));
   if(r.ok){
     if(cur===threadId){const u=new URL(location.href);u.searchParams.set("t",DEFAULT_THREAD);location.href=u}
@@ -877,15 +879,15 @@ async function doDelete(threadId:string){
   }else{statusMsg(r.error||"Delete failed")}
 }
 
-async function api(method:string,path:string,body?:unknown){
-  const q=path+(path.includes("?")?"&":"?")+"token="+encodeURIComponent(token);
-  const opts:RequestInit={method,headers:{}};
+async function api(method,url,body){
+  const q=url+(url.includes("?")?"&":"?")+"token="+encodeURIComponent(token);
+  const opts={method,headers:{}};
   if(body){opts.headers={"Content-Type":"application/json"};opts.body=JSON.stringify(body)}
   const r=await fetch(q,opts);
-  return r.json() as Promise<{ok:boolean;error?:string}>;
+  return r.json();
 }
 
-function statusMsg(text:string){
+function statusMsg(text){
   const d=document.createElement("div");d.className="msg info";d.textContent=text;
   msgs.appendChild(d);msgs.scrollTop=msgs.scrollHeight;
   setTimeout(()=>{if(d.parentNode)d.parentNode.removeChild(d)},4000);
@@ -934,7 +936,7 @@ function showQuestion(q){
 }
 function connect(){
   ws=new WebSocket(wsUrl);
-  ws.onopen=()=>{ok=true;btn.disabled=false;bar.textContent=cur;inp.focus()};
+  ws.onopen=()=>{ok=true;btn.disabled=false;if(mobTitle)mobTitle.textContent=cur;inp.focus()};
   let siEl=null;
 function showStatus(text){
   if(!siEl){siEl=document.createElement("div");siEl.className="si-msg";siEl.innerHTML='<div class="si-dots"><div class="si-dot"></div><div class="si-dot"></div><div class="si-dot"></div></div><span class="si-text"></span>';}
@@ -950,7 +952,7 @@ function clearStatus(){if(siEl&&siEl.parentNode)siEl.parentNode.removeChild(siEl
     else if(m.text){clearStatus();addMsg(m.text,m.role||"bot");}
   }catch{clearStatus();addMsg(e.data,"bot");}
 };
-  ws.onclose=()=>{ok=false;btn.disabled=true;bar.textContent="reconnecting…";setTimeout(connect,2000)};
+  ws.onclose=()=>{ok=false;btn.disabled=true;if(mobTitle)mobTitle.textContent="reconnecting…";setTimeout(connect,2000)};
   ws.onerror=()=>ws.close();
 }
 
